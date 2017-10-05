@@ -182,7 +182,13 @@ class FullyConnectedNet(object):
         # beta2, etc. Scale parameters should be initialized to one and shift      #
         # parameters should be initialized to zero.                                #
         ############################################################################
-        pass
+        layer_rows = input_dim
+        for layer_index in range(self.num_layers):
+            layer_cols = hidden_dims[layer_index] if layer_index < len(hidden_dims) else num_classes
+            layer_num = '{}'.format(layer_index + 1)
+            self.params['W' + layer_num] = weight_scale * np.random.randn(layer_rows, layer_cols)
+            self.params['b' + layer_num] = np.zeros(layer_cols)
+            layer_rows = layer_cols
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
@@ -240,7 +246,48 @@ class FullyConnectedNet(object):
         # self.bn_params[1] to the forward pass for the second batch normalization #
         # layer, etc.                                                              #
         ############################################################################
-        pass
+        from functools import partial
+        cache = {}
+        def memoized(key, backward_func):
+            if key not in cache:
+                cache.update(backward_func())
+
+            return cache[key]
+
+        layer_mem = {}
+        getGradient = lambda grad_key: layer_mem[grad_key]()
+        input_data = X
+        AFFINE_ONLY_LAYER = self.num_layers - 1
+        for layer_index in range(self.num_layers):
+            layer_num = '{}'.format(layer_index + 1)
+            Wx_key, bx_key = 'W' + layer_num, 'b' + layer_num
+            outx_key = 'out' + layer_num
+            Wx, bx = self.params[Wx_key], self.params[bx_key]
+
+            if layer_index != AFFINE_ONLY_LAYER:
+                input_data, affine_relu_cache = affine_relu_forward(input_data, Wx, bx)
+
+                def back_hidden(backward_func, forward_cache):
+                    outprev_key = 'out{}'.format(layer_index+2)
+                    outx_key = 'out' + layer_num
+                    dy = cache[outprev_key]
+                    dOut, dW, db = backward_func(dy, forward_cache)
+
+                    return { Wx_key : dW, bx_key : db, outx_key : dOut }
+
+                layer_mem[Wx_key] = partial(memoized, Wx_key, partial(back_hidden, affine_relu_backward, affine_relu_cache))
+                layer_mem[bx_key] = partial(memoized, bx_key, partial(back_hidden, affine_relu_backward, affine_relu_cache))
+            else:
+                input_data, affine_h2_cache = affine_forward(input_data, Wx, bx)
+                softmax_loss_out, d_affine_h2_out = softmax_loss(input_data, y)
+                def back_out(backward_func, forward_cache):
+                    dOut, dW, db = backward_func(d_affine_h2_out, forward_cache)
+                    return { Wx_key : dW, bx_key : db, outx_key : dOut }
+
+                layer_mem[Wx_key] = partial(memoized, Wx_key, partial(back_out, affine_backward, affine_h2_cache))
+                layer_mem[bx_key] = partial(memoized, bx_key, partial(back_out, affine_backward, affine_h2_cache))
+
+        scores = input_data
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
@@ -263,7 +310,25 @@ class FullyConnectedNet(object):
         # automated tests, make sure that your L2 regularization includes a factor #
         # of 0.5 to simplify the expression for the gradient.                      #
         ############################################################################
-        pass
+        reg = self.reg
+        softmax_loss_out, d_affine_h2_out = softmax_loss(input_data, y)
+        l2_regularization = lambda LAYER_WEIGHTS: reg * np.sum(LAYER_WEIGHTS ** 2) * 0.5
+
+        reg_loss = 0
+
+        for layer_index in reversed(range(self.num_layers)):
+            layer_num = '{}'.format(layer_index + 1)
+            Wx_key, bx_key = 'W' + layer_num, 'b' + layer_num
+            Wx, bx = self.params[Wx_key], self.params[bx_key]
+            dWx = getGradient(Wx_key)
+            dbx = getGradient(bx_key)
+            reg_loss += l2_regularization(Wx)
+
+            grads[Wx_key] = dWx + reg * Wx
+            grads[bx_key] = dbx
+
+        loss = softmax_loss_out + reg_loss
+
         ############################################################################
         #                             END OF YOUR CODE                             #
         ############################################################################
