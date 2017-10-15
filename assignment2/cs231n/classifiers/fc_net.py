@@ -256,27 +256,33 @@ class FullyConnectedNet(object):
 
         layer_mem = {}
         getGradient = lambda grad_key: layer_mem[grad_key]()
+        dropout_cache = None
         input_data = X
         AFFINE_ONLY_LAYER = self.num_layers - 1
         for layer_index in range(self.num_layers):
             layer_num = '{}'.format(layer_index + 1)
-            Wx_key, bx_key = 'W' + layer_num, 'b' + layer_num
-            outx_key = 'out' + layer_num
+            Wx_key, bx_key, outx_key = 'W' + layer_num, 'b' + layer_num, 'out' + layer_num
             Wx, bx = self.params[Wx_key], self.params[bx_key]
 
             if layer_index != AFFINE_ONLY_LAYER:
                 input_data, affine_relu_cache = affine_relu_forward(input_data, Wx, bx)
+                if self.use_dropout:
+                    prev_shape = input_data.shape
+                    input_data, dropout_cache = dropout_forward(input_data, self.dropout_param)
 
-                def back_hidden(backward_func, forward_cache):
+                def back_hidden(backward_func, forward_cache, cur_dropout_cache):
                     outprev_key = 'out{}'.format(layer_index+2)
                     outx_key = 'out' + layer_num
                     dy = cache[outprev_key]
+                    if cur_dropout_cache:
+                        dy = dropout_backward(dy, cur_dropout_cache)
+
                     dOut, dW, db = backward_func(dy, forward_cache)
 
                     return { Wx_key : dW, bx_key : db, outx_key : dOut }
 
-                layer_mem[Wx_key] = partial(memoized, Wx_key, partial(back_hidden, affine_relu_backward, affine_relu_cache))
-                layer_mem[bx_key] = partial(memoized, bx_key, partial(back_hidden, affine_relu_backward, affine_relu_cache))
+                layer_mem[Wx_key] = partial(memoized, Wx_key, partial(back_hidden, affine_relu_backward, affine_relu_cache, dropout_cache))
+                layer_mem[bx_key] = partial(memoized, bx_key, partial(back_hidden, affine_relu_backward, affine_relu_cache, dropout_cache))
             else:
                 input_data, affine_h2_cache = affine_forward(input_data, Wx, bx)
                 softmax_loss_out, d_affine_h2_out = softmax_loss(input_data, y)
