@@ -188,6 +188,9 @@ class FullyConnectedNet(object):
             layer_num = '{}'.format(layer_index + 1)
             self.params['W' + layer_num] = weight_scale * np.random.randn(layer_rows, layer_cols)
             self.params['b' + layer_num] = np.zeros(layer_cols)
+            if self.use_batchnorm and layer_index < self.num_layers - 1:
+                self.params['gamma' + layer_num] = np.ones(layer_cols)
+                self.params['beta' + layer_num] = np.zeros(layer_cols)
             layer_rows = layer_cols
         ############################################################################
         #                             END OF YOUR CODE                             #
@@ -257,6 +260,7 @@ class FullyConnectedNet(object):
         layer_mem = {}
         getGradient = lambda grad_key: layer_mem[grad_key]()
         dropout_cache = None
+        batchnorm_cache = None
         input_data = X
         AFFINE_ONLY_LAYER = self.num_layers - 1
         for layer_index in range(self.num_layers):
@@ -266,23 +270,38 @@ class FullyConnectedNet(object):
 
             if layer_index != AFFINE_ONLY_LAYER:
                 input_data, affine_relu_cache = affine_relu_forward(input_data, Wx, bx)
+                gammax_key, betax_key = 'gamma' + layer_num, 'beta' + layer_num
+                if self.use_batchnorm:
+                    gammax, betax = self.params[gammax_key], self.params[betax_key]
+                    input_data, batchnorm_cache = batchnorm_forward(input_data, gammax, betax, self.bn_params[layer_index])
+
                 if self.use_dropout:
                     prev_shape = input_data.shape
                     input_data, dropout_cache = dropout_forward(input_data, self.dropout_param)
 
-                def back_hidden(backward_func, forward_cache, cur_dropout_cache):
+                def back_hidden(backward_func, forward_cache, cur_dropout_cache, cur_batchnorm_cache):
                     outprev_key = 'out{}'.format(layer_index+2)
                     outx_key = 'out' + layer_num
                     dy = cache[outprev_key]
+                    gradient = {}
+                    gammax_key, betax_key = 'gamma' + layer_num, 'beta' + layer_num
                     if cur_dropout_cache:
                         dy = dropout_backward(dy, cur_dropout_cache)
 
+                    if cur_batchnorm_cache:
+                        dy, dgamma, dbeta = batchnorm_backward(dy, cur_batchnorm_cache)
+                        gradient.update({ gammax_key : dgamma, betax_key : dbeta })
+
                     dOut, dW, db = backward_func(dy, forward_cache)
+                    gradient.update({ Wx_key : dW, bx_key : db, outx_key : dOut })
 
-                    return { Wx_key : dW, bx_key : db, outx_key : dOut }
+                    return gradient
 
-                layer_mem[Wx_key] = partial(memoized, Wx_key, partial(back_hidden, affine_relu_backward, affine_relu_cache, dropout_cache))
-                layer_mem[bx_key] = partial(memoized, bx_key, partial(back_hidden, affine_relu_backward, affine_relu_cache, dropout_cache))
+                compute_gradient = partial(back_hidden, affine_relu_backward, affine_relu_cache, dropout_cache, batchnorm_cache)
+                layer_mem[Wx_key] = partial(memoized, Wx_key, compute_gradient)
+                layer_mem[bx_key] = partial(memoized, bx_key, compute_gradient)
+                layer_mem[gammax_key] = partial(memoized, gammax_key, compute_gradient)
+                layer_mem[betax_key] = partial(memoized, betax_key, compute_gradient)
             else:
                 input_data, affine_h2_cache = affine_forward(input_data, Wx, bx)
                 softmax_loss_out, d_affine_h2_out = softmax_loss(input_data, y)
@@ -323,7 +342,7 @@ class FullyConnectedNet(object):
         reg_loss = 0
 
         for layer_index in reversed(range(self.num_layers)):
-            layer_num = '{}'.format(layer_index + 1)
+            layer_num = str(layer_index + 1)
             Wx_key, bx_key = 'W' + layer_num, 'b' + layer_num
             Wx, bx = self.params[Wx_key], self.params[bx_key]
             dWx = getGradient(Wx_key)
@@ -332,6 +351,10 @@ class FullyConnectedNet(object):
 
             grads[Wx_key] = dWx + reg * Wx
             grads[bx_key] = dbx
+            if self.use_batchnorm and layer_index < self.num_layers - 1:
+                gammax_key, betax_key = 'gamma' + layer_num, 'beta' + layer_num
+                grads[gammax_key] = getGradient(gammax_key)
+                grads[betax_key] = getGradient(betax_key)
 
         loss = softmax_loss_out + reg_loss
 
